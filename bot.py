@@ -243,16 +243,36 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ws = sheet.worksheet("Повседневные")
         data = ws.get_all_records()
         now = datetime.now()
-        current_month = MONTH_NAMES[now.month]
-        monthly = [r for r in data if r.get("Месяц") == current_month and r.get("Тип") == "Расход"]
         by_cat = {}
         total = 0
-        for r in monthly:
-            cat = r.get("Категория", "Прочее")
-            amt = float(r.get("Стоимость", 0))
+        skipped = 0
+        for r in data:
+            if r.get("Тип") != "Расход":
+                continue
+            date_val = r.get("Дата", "")
+            try:
+                if isinstance(date_val, str) and date_val:
+                    row_date = datetime.strptime(date_val[:10], "%Y-%m-%d")
+                else:
+                    skipped += 1
+                    continue
+                if row_date.month != now.month or row_date.year != now.year:
+                    continue
+            except ValueError:
+                skipped += 1
+                continue
+            cat = r.get("Категория", "Прочее") or "Прочее"
+            try:
+                amt = float(str(r.get("Стоимость", 0)).replace(",", "."))
+            except ValueError:
+                continue
             by_cat[cat] = by_cat.get(cat, 0) + amt
             total += amt
-        lines = [f"📊 Расходы за {current_month} {now.year}:\n"]
+        month_name = MONTH_NAMES[now.month]
+        if not by_cat:
+            await update.message.reply_text(f"📊 За {month_name} {now.year} расходов не найдено.")
+            return
+        lines = [f"📊 Расходы за {month_name} {now.year}:\n"]
         for cat, amt in sorted(by_cat.items(), key=lambda x: -x[1]):
             pct = amt / total * 100 if total else 0
             lines.append(f"  • {cat}: {amt:.2f} € ({pct:.0f}%)")
