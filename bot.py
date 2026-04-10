@@ -205,16 +205,14 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for r in data:
             if r.get("Тип") != "Расход":
                 continue
-            # Фильтр по дате
-            date_val = str(r.get("Дата", ""))
+            date_val = str(r.get("Дата", "")).strip()
+            if not date_val:
+                continue
             row_date = parse_date(date_val)
-            if row_date:
-                if row_date.month != now.month or row_date.year != now.year:
-                    continue
-            else:
-                # Запасной вариант — по колонке Месяц (только текущий год)
-                if r.get("Месяц", "") != current_month_name:
-                    continue
+            if not row_date:
+                continue
+            if row_date.month != now.month or row_date.year != now.year:
+                continue
             cat = r.get("Категория", "Прочее") or "Прочее"
             try:
                 amt = float(str(r.get("Стоимость", 0)).replace(",", "."))
