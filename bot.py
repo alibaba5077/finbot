@@ -62,6 +62,17 @@ def parse_date(date_val: str):
     return None
 
 
+def get_uah_to_eur_rate() -> float:
+    try:
+        response = requests.get("https://api.monobank.ua/bank/currency", timeout=5)
+        for rate in response.json():
+            if rate.get("currencyCodeA") == 978 and rate.get("currencyCodeB") == 980:
+                return rate.get("rateSell", 0) or rate.get("rateCross", 45)
+        return 45.0
+    except Exception:
+        return 45.0
+
+
 def fetch_mono_transactions(days: int = 7) -> list:
     now = int(datetime.now().timestamp())
     from_time = int((datetime.now() - timedelta(days=days)).timestamp())
@@ -70,14 +81,20 @@ def fetch_mono_transactions(days: int = 7) -> list:
     response = requests.get(url, headers=headers)
     if response.status_code != 200:
         return []
+    eur_rate = get_uah_to_eur_rate()
     transactions = []
     for t in response.json():
         if t["amount"] >= 0:
             continue
-        amount = abs(t["amount"]) / 100
+        amount_uah = abs(t["amount"]) / 100
+        currency = t.get("currencyCode", 980)
+        if currency == 978:
+            amount_eur = abs(t.get("operationAmount", t["amount"])) / 100
+        else:
+            amount_eur = round(amount_uah / eur_rate, 2)
         desc = t.get("description", "")
         date = datetime.fromtimestamp(t["time"])
-        transactions.append({"date": date, "description": desc, "amount": amount, "category": get_category(desc), "source": "Monobank"})
+        transactions.append({"date": date, "description": desc, "amount": amount_eur, "category": get_category(desc), "source": "Monobank"})
     return transactions
 
 
@@ -216,15 +233,9 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cat = r.get("Категория", "Прочее") or "Прочее"
             try:
                 amt_raw = r.get("Стоимость", 0)
-                # Google Sheets с русской локалью: 15,49 → строка "1549" (без разделителя)
-                # Но если число float (15.49) — читаем напрямую
-                if isinstance(amt_raw, float):
-                    amt = amt_raw
-                elif isinstance(amt_raw, int):
-                    amt = float(amt_raw)
-                else:
-                    # строка — заменяем запятую на точку
-                    amt = float(str(amt_raw).replace(",", "."))
+                # Google Sheets с русской локалью убирает запятую: 15,49 → 1549, 563,00 → 56300
+                # Поэтому всегда делим на 100
+                amt = float(str(amt_raw).replace(",", ".").replace(" ", "")) / 100
             except ValueError:
                 continue
             by_cat[cat] = by_cat.get(cat, 0) + amt
