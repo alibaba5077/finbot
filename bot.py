@@ -36,6 +36,20 @@ MONTH_NAMES = {
     9: "сент.", 10: "окт.", 11: "нояб.", 12: "дек."
 }
 
+CAT_MAP = {
+    "продукты": "Продукты", "еда": "Продукты",
+    "кафе": "Кафе", "ресторан": "Кафе", "кофе": "Кафе",
+    "транспорт": "Транспорт", "метро": "Транспорт", "бвг": "Транспорт",
+    "здоровье": "Здоровье", "врач": "Здоровье", "аптека": "Здоровье", "психолог": "Здоровье",
+    "фитнесс": "Фитнесс", "спорт": "Фитнесс", "фитнес": "Фитнесс",
+    "одежда": "Одежда",
+    "немецкий": "Немецкий", "курсы": "Немецкий",
+    "подарки": "Подарки", "подарок": "Подарки",
+    "дом": "Для дома",
+    "уход": "Уход",
+    "прочее": "Прочее",
+}
+
 
 def get_category(description: str) -> str:
     desc = description.lower()
@@ -64,11 +78,8 @@ def parse_date(date_val: str):
 
 
 def parse_amount(amt_raw) -> float:
-    # Google Sheets с русской локалью отдаёт числа как float (15.49)
-    # или как int (15) — просто конвертируем напрямую
     if isinstance(amt_raw, (float, int)):
         return float(amt_raw)
-    # Строка — убираем пробелы, заменяем запятую на точку
     s = str(amt_raw).strip().replace(" ", "")
     if "," in s:
         s = s.replace(",", ".")
@@ -103,8 +114,7 @@ def fetch_mono_transactions(days: int = 7) -> list:
         if currency == 978:
             amount_eur = abs(t.get("operationAmount", t["amount"])) / 100
         else:
-            amount_uah = abs(t["amount"]) / 100
-            amount_eur = round(amount_uah / eur_rate, 2)
+            amount_eur = round(abs(t["amount"]) / 100 / eur_rate, 2)
         desc = t.get("description", "")
         date = datetime.fromtimestamp(t["time"])
         transactions.append({"date": date, "description": desc, "amount": amount_eur, "category": get_category(desc), "source": "Monobank", "type": "Расход"})
@@ -133,6 +143,32 @@ def save_to_sheet(transactions: list) -> int:
         existing.append(marker)
         added += 1
     return added
+
+
+def get_month_data(month: int, year: int):
+    sheet = get_google_sheet()
+    ws = sheet.worksheet("Повседневные")
+    data = ws.get_all_records()
+    expenses = {}
+    income = {}
+    for r in data:
+        date_val = str(r.get("Дата", "")).strip()
+        if not date_val:
+            continue
+        row_date = parse_date(date_val)
+        if not row_date or row_date.month != month or row_date.year != year:
+            continue
+        try:
+            amt = parse_amount(r.get("Стоимость", 0))
+        except ValueError:
+            continue
+        if r.get("Тип") == "Расход":
+            cat = r.get("Категория", "Прочее") or "Прочее"
+            expenses[cat] = expenses.get(cat, 0) + amt
+        elif r.get("Тип") == "Доход":
+            cat = r.get("Категория", "") or "Доход"
+            income[cat] = income.get(cat, 0) + amt
+    return expenses, income
 
 
 def parse_csv_revolut(text: str) -> list:
@@ -207,7 +243,7 @@ def parse_pdf_sparkasse(pdf_bytes: bytes) -> list:
                         if not date or not amt_str:
                             continue
                         try:
-                            amount = float(amt_str.replace(".", "").replace(",", ".").replace(" ", "").replace("€", "").replace("+", ""))
+                            amount = float(amt_str.replace(".", "").replace(",", ".").replace(" ", "").replace("\u20ac", "").replace("+", ""))
                         except ValueError:
                             continue
                         tip = "Расход" if amount < 0 else "Доход"
@@ -217,30 +253,41 @@ def parse_pdf_sparkasse(pdf_bytes: bytes) -> list:
         return []
 
 
-def get_month_data(month: int, year: int):
-    sheet = get_google_sheet()
-    ws = sheet.worksheet("Повседневные")
-    data = ws.get_all_records()
-    expenses = {}
-    income = {}
-    for r in data:
-        date_val = str(r.get("Дата", "")).strip()
-        if not date_val:
-            continue
-        row_date = parse_date(date_val)
-        if not row_date or row_date.month != month or row_date.year != year:
-            continue
-        try:
-            amt = parse_amount(r.get("Стоимость", 0))
-        except ValueError:
-            continue
-        if r.get("Тип") == "Расход":
-            cat = r.get("Категория", "Прочее") or "Прочее"
-            expenses[cat] = expenses.get(cat, 0) + amt
-        elif r.get("Тип") == "Доход":
-            cat = r.get("Категория", "") or "Доход"
-            income[cat] = income.get(cat, 0) + amt
-    return expenses, income
+# ─── Handlers ────────────────────────────────────────────────────────────────
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Привет! Я твой финансовый бот.\n\n"
+        "📥 /sync — загрузить из Monobank за 7 дней\n"
+        "📊 /summary — расходы и доходы за текущий месяц\n"
+        "📅 /month 04.2026 — сводка за любой месяц\n"
+        "📈 /year 2026 — итоги за весь год\n"
+        "➕ /add 25.5 продукты lidl — добавить трату\n"
+        "💚 /income 563 выплата — добавить доход\n"
+        "🔔 /weekly — еженедельная синхронизация\n"
+        "🗓 /monthly — ежемесячный отчёт 1-го числа\n"
+        "📎 Отправь CSV или PDF — загружу из Revolut, PayPal или Sparkasse\n"
+        "🔍 /debug — диагностика"
+    )
+
+
+async def sync_mono(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Загружаю транзакции из Monobank...")
+    try:
+        transactions = fetch_mono_transactions(days=7)
+        if not transactions:
+            await update.message.reply_text("✅ Новых транзакций нет.")
+            return
+        added = save_to_sheet(transactions)
+        by_cat = {}
+        for t in transactions:
+            by_cat[t["category"]] = by_cat.get(t["category"], 0) + t["amount"]
+        lines = [f"✅ Загружено {added} новых из {len(transactions)} транзакций!\n", "📊 По категориям:"]
+        for cat, amt in sorted(by_cat.items(), key=lambda x: -x[1]):
+            lines.append(f"  • {cat}: {amt:.2f} €")
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
 async def show_month_summary(update, month: int, year: int):
@@ -266,37 +313,8 @@ async def show_month_summary(update, month: int, year: int):
                 lines.append(f"  • {cat}: {amt:.2f} €")
             lines.append(f"  Итого: {total_inc:.2f} €")
         balance = total_inc - total_exp
-        lines.append(f"\n💰 Баланс: {'+' if balance >= 0 else ''}{balance:.2f} €")
-        await update.message.reply_text("\n".join(lines))
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Привет! Я твой финансовый бот.\n\n"
-        "📥 /sync — загрузить из Monobank за 7 дней\n"
-        "📊 /summary — расходы и доходы за текущий месяц\n"
-        "📅 /month 04.2026 — сводка за любой месяц\n"
-        "📎 Отправь CSV или PDF — загружу из Revolut, PayPal или Sparkasse\n"
-        "🔍 /debug — диагностика"
-    )
-
-
-async def sync_mono(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Загружаю транзакции из Monobank...")
-    try:
-        transactions = fetch_mono_transactions(days=7)
-        if not transactions:
-            await update.message.reply_text("✅ Новых транзакций нет.")
-            return
-        added = save_to_sheet(transactions)
-        by_cat = {}
-        for t in transactions:
-            by_cat[t["category"]] = by_cat.get(t["category"], 0) + t["amount"]
-        lines = [f"✅ Загружено {added} новых из {len(transactions)} транзакций!\n", "📊 По категориям:"]
-        for cat, amt in sorted(by_cat.items(), key=lambda x: -x[1]):
-            lines.append(f"  • {cat}: {amt:.2f} €")
+        sign = "+" if balance >= 0 else ""
+        lines.append(f"\n💰 Баланс: {sign}{balance:.2f} €")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
@@ -320,18 +338,119 @@ async def month_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Неверный формат. Пример: /month 04.2026")
 
 
+async def year_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    year = int(args[0]) if args else datetime.now().year
+    await update.message.reply_text(f"⏳ Считаю итоги за {year}...")
+    try:
+        sheet = get_google_sheet()
+        ws = sheet.worksheet("Повседневные")
+        data = ws.get_all_records()
+        monthly = {}
+        total_exp = 0
+        total_inc = 0
+        for r in data:
+            date_val = str(r.get("Дата", "")).strip()
+            if not date_val:
+                continue
+            row_date = parse_date(date_val)
+            if not row_date or row_date.year != year:
+                continue
+            try:
+                amt = parse_amount(r.get("Стоимость", 0))
+            except ValueError:
+                continue
+            m = row_date.month
+            if m not in monthly:
+                monthly[m] = {"exp": 0, "inc": 0}
+            if r.get("Тип") == "Расход":
+                monthly[m]["exp"] += amt
+                total_exp += amt
+            elif r.get("Тип") == "Доход":
+                monthly[m]["inc"] += amt
+                total_inc += amt
+        if not monthly:
+            await update.message.reply_text(f"Данных за {year} не найдено.")
+            return
+        lines = [f"📈 Итоги {year}\n"]
+        for m in sorted(monthly.keys()):
+            exp = monthly[m]["exp"]
+            inc = monthly[m]["inc"]
+            bal = inc - exp
+            sign = "+" if bal >= 0 else ""
+            lines.append(f"{MONTH_NAMES[m]:6} | 🔴{exp:.0f}€ | 🟢{inc:.0f}€ | {sign}{bal:.0f}€")
+        lines.append("\n" + "─" * 32)
+        lines.append(f"Итого  | 🔴{total_exp:.2f}€ | 🟢{total_inc:.2f}€")
+        bal = total_inc - total_exp
+        lines.append(f"Баланс | 💰{'+' if bal >= 0 else ''}{bal:.2f}€")
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
+async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Формат: /add сумма категория описание\n"
+            "Пример: /add 25.5 продукты lidl\n"
+            "Пример: /add 47 здоровье психолог\n\n"
+            "Категории: продукты, кафе, транспорт, здоровье, фитнесс, одежда, немецкий, подарки, дом, уход, прочее"
+        )
+        return
+    try:
+        amount = float(args[0].replace(",", "."))
+        cat_input = args[1].lower()
+        description = " ".join(args[2:]) if len(args) > 2 else args[1]
+        category = CAT_MAP.get(cat_input, get_category(cat_input))
+        now = datetime.now()
+        save_to_sheet([{"date": now, "description": description, "amount": amount, "category": category, "source": "Бот", "type": "Расход"}])
+        await update.message.reply_text(
+            f"✅ Добавлено!\n"
+            f"  📁 {category}\n"
+            f"  💶 {amount:.2f} €\n"
+            f"  📝 {description}\n"
+            f"  📅 {now.strftime('%d.%m.%Y')}"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ Неверная сумма. Пример: /add 25.5 продукты lidl")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
+async def income_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("Формат: /income сумма описание\nПример: /income 563 выплата")
+        return
+    try:
+        amount = float(args[0].replace(",", "."))
+        description = " ".join(args[1:])
+        now = datetime.now()
+        save_to_sheet([{"date": now, "description": description, "amount": amount, "category": "", "source": "Бот", "type": "Доход"}])
+        await update.message.reply_text(
+            f"✅ Доход добавлен!\n"
+            f"  🟢 {amount:.2f} €\n"
+            f"  📝 {description}\n"
+            f"  📅 {now.strftime('%d.%m.%Y')}"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ Неверная сумма. Пример: /income 563 выплата")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
 async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sheet = get_google_sheet()
         ws = sheet.worksheet("Повседневные")
         data = ws.get_all_records()
         now = datetime.now()
-        month_name = MONTH_NAMES[now.month]
         rows = [r for r in data if str(r.get("Дата", "")).strip() and parse_date(str(r.get("Дата", ""))) and parse_date(str(r.get("Дата", ""))).month == now.month]
-        lines = [f"Всего строк: {len(data)}", f"Строк за {month_name}: {len(rows)}", ""]
+        lines = [f"Всего строк: {len(data)}", f"Строк за текущий месяц: {len(rows)}", ""]
         for r in rows[:5]:
             amt_raw = r.get("Стоимость", 0)
-            lines.append(f"  {r.get('Дата','')} | {r.get('Категория','')} | {r.get('Тип','')} | raw={amt_raw}({type(amt_raw).__name__})")
+            lines.append(f"  {r.get('Дата','')} | {r.get('Категория','')} | {r.get('Тип','')} | {amt_raw}({type(amt_raw).__name__})")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
@@ -373,7 +492,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def process_file(update_or_query, context, file_id: str, source: str, is_pdf: bool):
-    reply = update_or_query.message.reply_text if hasattr(update_or_query, 'message') else update_or_query.edit_message_text
+    reply = update_or_query.message.reply_text if hasattr(update_or_query, "message") else update_or_query.edit_message_text
     await reply(f"⏳ Обрабатываю файл из {source}...")
     try:
         file = await context.bot.get_file(file_id)
@@ -402,6 +521,46 @@ async def process_file(update_or_query, context, file_id: str, source: str, is_p
         await reply("\n".join(lines))
     except Exception as e:
         await reply(f"❌ Ошибка: {str(e)}")
+
+
+async def send_monthly_report(context, chat_id: int):
+    now = datetime.now()
+    month = now.month - 1 if now.month > 1 else 12
+    year = now.year if now.month > 1 else now.year - 1
+    try:
+        expenses, income = get_month_data(month, year)
+        total_exp = sum(expenses.values())
+        total_inc = sum(income.values())
+        balance = total_inc - total_exp
+        month_name = MONTH_NAMES[month]
+        lines = [f"🗓 Ежемесячный отчёт — {month_name} {year}\n"]
+        if expenses:
+            lines.append("🔴 Расходы:")
+            for cat, amt in sorted(expenses.items(), key=lambda x: -x[1]):
+                pct = amt / total_exp * 100 if total_exp else 0
+                lines.append(f"  • {cat}: {amt:.2f}€ ({pct:.0f}%)")
+            lines.append(f"  Итого: {total_exp:.2f}€\n")
+        if income:
+            lines.append("🟢 Доходы:")
+            for cat, amt in sorted(income.items(), key=lambda x: -x[1]):
+                lines.append(f"  • {cat}: {amt:.2f}€")
+            lines.append(f"  Итого: {total_inc:.2f}€\n")
+        sign = "+" if balance >= 0 else ""
+        lines.append(f"💰 Баланс: {sign}{balance:.2f}€")
+        if expenses:
+            top_cat = max(expenses, key=expenses.get)
+            lines.append(f"\n🏆 Больше всего: {top_cat} ({expenses[top_cat]:.2f}€)")
+        if balance < 0:
+            lines.append(f"⚠️ Расходы превысили доходы на {abs(balance):.2f}€")
+        else:
+            lines.append(f"✨ Сэкономлено {balance:.2f}€")
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка анализа: {str(e)}")
+
+
+async def monthly_analysis(context: ContextTypes.DEFAULT_TYPE):
+    await send_monthly_report(context, context.job.chat_id)
 
 
 async def weekly_sync(context: ContextTypes.DEFAULT_TYPE):
@@ -433,13 +592,23 @@ async def setup_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Еженедельная синхронизация настроена! Каждое воскресенье буду присылать сводку 📊")
 
 
+async def setup_monthly(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    context.job_queue.run_monthly(monthly_analysis, when=datetime.now().replace(hour=9, minute=0, second=0).time(), day=1, chat_id=chat_id, name=f"monthly_{chat_id}")
+    await update.message.reply_text("✅ Ежемесячный отчёт включён! Каждое 1-е число в 9:00 буду присылать анализ прошедшего месяца 🗓")
+
+
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("sync", sync_mono))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("month", month_cmd))
+    app.add_handler(CommandHandler("year", year_cmd))
+    app.add_handler(CommandHandler("add", add_cmd))
+    app.add_handler(CommandHandler("income", income_cmd))
     app.add_handler(CommandHandler("weekly", setup_weekly))
+    app.add_handler(CommandHandler("monthly", setup_monthly))
     app.add_handler(CommandHandler("debug", debug))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(handle_callback))
