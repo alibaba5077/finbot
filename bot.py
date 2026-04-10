@@ -252,9 +252,17 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             matched = False
             date_val = str(r.get("Дата", ""))
             try:
-                for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%m/%d/%Y"):     try:         row_date = datetime.strptime(date_val[:10], fmt); break     except ValueError: row_date = None if row_date is None: matched = False
-                if row_date.month == now.month and row_date.year == now.year:
+                row_date = None
+                for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%m/%d/%Y"):
+                    try:
+                        row_date = datetime.strptime(date_val[:10], fmt)
+                        break
+                    except ValueError:
+                        continue
+                if row_date and row_date.month == now.month and row_date.year == now.year:
                     matched = True
+            except Exception:
+                pass
             except ValueError:
                 pass
             if not matched and r.get("Месяц", "") == current_month_name:
