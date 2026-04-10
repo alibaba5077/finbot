@@ -160,14 +160,14 @@ async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = ws.get_all_records()
         now = datetime.now()
         lines = [f"Всего строк: {len(data)}", f"Текущий месяц: {MONTH_NAMES[now.month]}", ""]
-        lines.append("Последние 5 строк:")
-        for r in [r for r in data if "апр" in str(r.get("Месяц", "")) and str(r.get("Дата","")).strip()][:5]:
-            date_raw = r.get("Дата", "")
-            month_raw = r.get("Месяц", "")
-            amt = r.get("Стоимость", "")
-            tip = r.get("Тип", "")
-            parsed = parse_date(str(date_raw))
-            lines.append(f"Дата: '{date_raw}'(тип:{type(date_raw).__name__}) parsed={parsed} | {tip} {amt}")
+        april_rows = [r for r in data if "апр" in str(r.get("Месяц", "")) and str(r.get("Дата","")).strip()]
+        expense_rows = [r for r in april_rows if r.get("Тип") == "Расход"]
+        total_debug = sum(float(str(r.get("Стоимость",0)).replace(",",".")) for r in expense_rows)
+        lines.append(f"Апрельских строк: {len(april_rows)}, расходов: {len(expense_rows)}")
+        lines.append(f"Сумма: {total_debug:.2f} €")
+        lines.append("")
+        for r in expense_rows[:8]:
+            lines.append(f"  {r.get('Дата','')} | {r.get('Категория','')} | {r.get('Стоимость','')}")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
@@ -215,7 +215,16 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
             cat = r.get("Категория", "Прочее") or "Прочее"
             try:
-                amt = float(str(r.get("Стоимость", 0)).replace(",", "."))
+                amt_raw = r.get("Стоимость", 0)
+                # Google Sheets с русской локалью: 15,49 → строка "1549" (без разделителя)
+                # Но если число float (15.49) — читаем напрямую
+                if isinstance(amt_raw, float):
+                    amt = amt_raw
+                elif isinstance(amt_raw, int):
+                    amt = float(amt_raw)
+                else:
+                    # строка — заменяем запятую на точку
+                    amt = float(str(amt_raw).replace(",", "."))
             except ValueError:
                 continue
             by_cat[cat] = by_cat.get(cat, 0) + amt
