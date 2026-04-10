@@ -161,13 +161,13 @@ async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.now()
         lines = [f"Всего строк: {len(data)}", f"Текущий месяц: {MONTH_NAMES[now.month]}", ""]
         lines.append("Последние 5 строк:")
-        for r in data[-5:]:
+        for r in [r for r in data if "апр" in str(r.get("Месяц", "")) and str(r.get("Дата","")).strip()][:5]:
             date_raw = r.get("Дата", "")
             month_raw = r.get("Месяц", "")
             amt = r.get("Стоимость", "")
             tip = r.get("Тип", "")
             parsed = parse_date(str(date_raw))
-            lines.append(f"Дата: '{date_raw}' → {parsed} | Месяц: '{month_raw}' | {tip} {amt}")
+            lines.append(f"Дата: '{date_raw}'(тип:{type(date_raw).__name__}) parsed={parsed} | {tip} {amt}")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
