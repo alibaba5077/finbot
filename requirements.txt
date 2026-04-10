@@ -1,0 +1,6 @@
+python-telegram-bot==20.7
+gspread==6.0.2
+google-auth==2.27.0
+requests==2.31.0
+python-dotenv==1.0.0
+pdfplumber==0.11.0
