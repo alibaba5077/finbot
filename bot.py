@@ -191,13 +191,29 @@ def parse_csv_revolut(text: str) -> list:
 def parse_csv_paypal(text: str) -> list:
     lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
     transactions = []
+    if not lines:
+        return transactions
+    # Определяем разделитель: табуляция или запятая
+    sep = "\t" if "\t" in lines[0] else ","
+    header = [h.strip().lower() for h in lines[0].split(sep)]
+    # Ищем индексы нужных колонок
+    try:
+        date_idx = next(i for i, h in enumerate(header) if "datum" in h or "date" in h)
+        desc_idx = next(i for i, h in enumerate(header) if "beschreibung" in h or "description" in h or "name" in h and i > 5)
+        amt_idx = next(i for i, h in enumerate(header) if "brutto" in h or "gross" in h or "amount" in h)
+    except StopIteration:
+        # Запасные индексы
+        date_idx, desc_idx, amt_idx = 0, 3, 5
     for line in lines[1:]:
-        parts = [p.strip().strip('"') for p in line.split(",")]
+        parts = [p.strip().strip('"') for p in line.split(sep)]
         try:
-            date = datetime.strptime(parts[0], "%d/%m/%Y")
-            desc = parts[3] if len(parts) > 3 else ""
-            amt_str = parts[7] if len(parts) > 7 else "0"
-            amount = float(amt_str.replace(".", "").replace(",", "."))
+            date = parse_date(parts[date_idx])
+            if not date:
+                continue
+            desc = parts[desc_idx] if len(parts) > desc_idx else ""
+            amt_str = parts[amt_idx] if len(parts) > amt_idx else "0"
+            amt_str = amt_str.replace(".", "").replace(",", ".").replace(" ", "")
+            amount = float(amt_str)
             if amount >= 0:
                 continue
             transactions.append({"date": date, "description": desc, "amount": abs(amount), "category": get_category(desc), "source": "PayPal", "type": "Расход"})
@@ -226,31 +242,61 @@ def parse_csv_sparkasse(text: str) -> list:
 
 
 def parse_pdf_sparkasse(pdf_bytes: bytes) -> list:
+    import re
     try:
         import pdfplumber
-        transactions = []
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for table in tables:
-                    for row in table:
-                        if not row or len(row) < 3:
-                            continue
-                        date_val = str(row[0]).strip() if row[0] else ""
-                        desc = str(row[1]).strip() if len(row) > 1 and row[1] else ""
-                        amt_str = str(row[-1]).strip() if row[-1] else ""
-                        date = parse_date(date_val)
-                        if not date or not amt_str:
-                            continue
-                        try:
-                            amount = float(amt_str.replace(".", "").replace(",", ".").replace(" ", "").replace("\u20ac", "").replace("+", ""))
-                        except ValueError:
-                            continue
-                        tip = "Расход" if amount < 0 else "Доход"
-                        transactions.append({"date": date, "description": desc, "amount": abs(amount), "category": get_category(desc) if tip == "Расход" else "", "source": "Sparkasse PDF", "type": tip})
-        return transactions
-    except Exception:
+    except ImportError:
         return []
+    DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}")
+    AMOUNT_RE = re.compile(r"^\s*(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$")
+    SKIP_RE = re.compile(r"(Kontostand|Seite \d|Berliner Sparkasse|Sparkassen|Vorstand|Telefon|www\.|BLZ:|SWIFT|Amtsgericht|USt|Sitz Berlin|Niederlassung|Vors\.|Nancy|Michael|Alexander|Postanschrift|Alexanderplatz 2, 10178)", re.IGNORECASE)
+    transactions = []
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            all_lines = []
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                all_lines.extend(text.split("\n"))
+        i = 0
+        while i < len(all_lines):
+            line = all_lines[i].strip()
+            if DATE_RE.match(line) and not SKIP_RE.search(line):
+                date_str = line[:10]
+                erlaeuterung = line[10:].strip()
+                desc_parts = []
+                i += 1
+                while i < len(all_lines):
+                    next_line = all_lines[i]
+                    amt_match = AMOUNT_RE.match(next_line)
+                    if amt_match:
+                        amt_str = amt_match.group(1).replace(".", "").replace(",", ".")
+                        amount = float(amt_str)
+                        desc = (erlaeuterung + " " + " ".join(desc_parts)).strip()
+                        date = parse_date(date_str)
+                        if date:
+                            tip = "Расход" if amount < 0 else "Доход"
+                            transactions.append({
+                                "date": date,
+                                "description": desc,
+                                "amount": abs(amount),
+                                "category": get_category(desc) if tip == "Расход" else "",
+                                "source": "Sparkasse PDF",
+                                "type": tip
+                            })
+                        i += 1
+                        break
+                    elif DATE_RE.match(next_line.strip()) and not SKIP_RE.search(next_line):
+                        break
+                    else:
+                        stripped = next_line.strip()
+                        if stripped and not SKIP_RE.search(stripped):
+                            desc_parts.append(stripped)
+                        i += 1
+            else:
+                i += 1
+    except Exception:
+        pass
+    return transactions
 
 
 # ─── Handlers ────────────────────────────────────────────────────────────────
@@ -456,6 +502,40 @@ async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {str(e)}")
 
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Быстрый ввод текстом: 'продукты 25.5 lidl' или '25 кафе'"""
+    text = update.message.text.strip().lower()
+    parts = text.split()
+    if len(parts) < 2:
+        return
+    # Пробуем найти сумму и категорию
+    amount = None
+    cat_input = None
+    desc_parts = []
+    for i, p in enumerate(parts):
+        try:
+            amount = float(p.replace(",", "."))
+            # Берём слово до или после как категорию
+            remaining = parts[:i] + parts[i+1:]
+            cat_input = remaining[0].lower() if remaining else "прочее"
+            desc_parts = remaining[1:] if len(remaining) > 1 else []
+            break
+        except ValueError:
+            continue
+    if amount is None:
+        return
+    category = CAT_MAP.get(cat_input, get_category(cat_input))
+    description = " ".join(desc_parts) if desc_parts else cat_input
+    now = datetime.now()
+    try:
+        save_to_sheet([{"date": now, "description": description, "amount": amount, "category": category, "source": "Бот", "type": "Расход"}])
+        await update.message.reply_text(
+            f"✅ Добавлено!\n  📁 {category}\n  💶 {amount:.2f} €\n  📝 {description}\n  📅 {now.strftime('%d.%m.%Y')}"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     fname = doc.file_name.lower()
@@ -611,6 +691,7 @@ def main():
     app.add_handler(CommandHandler("monthly", setup_monthly))
     app.add_handler(CommandHandler("debug", debug))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     print("Бот запущен!")
     app.run_polling()
