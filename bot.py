@@ -133,13 +133,19 @@ def save_to_sheet(transactions: list) -> int:
     existing = ws.col_values(6)
     added = 0
     for t in transactions:
-        date_str = t["date"].strftime("%d.%m.%Y")
-        month = MONTH_NAMES[t["date"].month]
+        # Записываем дату как серийный номер Google Sheets чтобы формулы работали
+        d = t["date"]
+        # Google Sheets serial date: дни с 30.12.1899
+        from datetime import date as date_type
+        serial = (d.date() if hasattr(d, 'date') else d) - date_type(1899, 12, 30)
+        gs_date = serial.days
+        month = MONTH_NAMES[d.month]
         comment = t["description"]
+        date_str = d.strftime("%d.%m.%Y")
         marker = f"{date_str}|{comment}"
         if marker in existing:
             continue
-        ws.append_row([date_str, month, t.get("category", ""), t.get("type", "Расход"), round(t["amount"], 2), comment, t.get("source", "")])
+        ws.append_row([gs_date, month, t.get("category", ""), t.get("type", "Расход"), round(t["amount"], 2), comment, t.get("source", "")])
         existing.append(marker)
         added += 1
     return added
