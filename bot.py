@@ -16,6 +16,9 @@ MONOBANK_TOKEN = os.getenv("MONOBANK_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
+# Хранилище file_id для кнопок (обходим лимит 64 символа в callback_data)
+pending_files = {}
+
 CATEGORIES = {
     "Продукты": ["rewe", "lidl", "aldi", "edeka", "penny", "netto", "kaufland", "billa", "spar", "metro", "продукты", "market"],
     "Кафе": ["cafe", "coffee", "starbucks", "kaffee", "restaurant", "pizza", "burger", "mcdonalds", "kfc", "subway", "bar", "кафе", "ресторан", "lieferando"],
@@ -557,12 +560,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "sparkasse" in fname or "umsatz" in fname or "export" in fname:
         source = "Sparkasse"
     else:
+        # Сохраняем file_id по короткому ключу
+        import hashlib
+        key = hashlib.md5(doc.file_id.encode()).hexdigest()[:8]
+        pending_files[key] = (doc.file_id, is_pdf)
         keyboard = [
-            [InlineKeyboardButton("Revolut", callback_data=f"file_revolut_{doc.file_id}")],
-            [InlineKeyboardButton("PayPal", callback_data=f"file_paypal_{doc.file_id}")],
-            [InlineKeyboardButton("Sparkasse", callback_data=f"file_sparkasse_{doc.file_id}")],
+            [InlineKeyboardButton("Revolut", callback_data=f"file_revolut_{key}")],
+            [InlineKeyboardButton("PayPal", callback_data=f"file_paypal_{key}")],
+            [InlineKeyboardButton("Sparkasse", callback_data=f"file_sparkasse_{key}")],
         ]
-        await update.message.reply_text("Из какого банка этот файл?", reply_markup=InlineKeyboardMarkup(keyboard))
+        fmt = "PDF" if is_pdf else "CSV"
+        await update.message.reply_text(f"Из какого банка этот {fmt} файл?", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     await process_file(update, context, doc.file_id, source, is_pdf)
 
@@ -574,7 +582,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if parts[0] == "file" and len(parts) == 3:
         source_map = {"revolut": "Revolut", "paypal": "PayPal", "sparkasse": "Sparkasse"}
         source = source_map.get(parts[1], parts[1])
-        await process_file(query, context, parts[2], source, False)
+        key = parts[2]
+        if key in pending_files:
+            file_id, is_pdf = pending_files.pop(key)
+        else:
+            await query.edit_message_text("❌ Файл устарел, отправь заново.")
+            return
+        await process_file(query, context, file_id, source, is_pdf)
 
 
 async def process_file(update_or_query, context, file_id: str, source: str, is_pdf: bool):
