@@ -270,6 +270,100 @@ def parse_csv_sparkasse(text: str) -> list:
     return transactions
 
 
+def parse_revolut_date_ua(s):
+    import re
+    UA_MONTHS = {
+        "січ": 1, "лют": 2, "бер": 3, "квіт": 4, "трав": 5, "черв": 6,
+        "лип": 7, "серп": 8, "вер": 9, "жовт": 10, "лист": 11, "груд": 12
+    }
+    m = re.match(r"(\d{1,2})\s+(\w+)\.?\s+(\d{4})", s)
+    if m:
+        day, mon_str, year = int(m.group(1)), m.group(2).lower(), int(m.group(3))
+        for key, num in UA_MONTHS.items():
+            if key in mon_str:
+                from datetime import datetime
+                return datetime(year, num, day)
+    return None
+
+
+def parse_pdf_revolut(pdf_bytes: bytes) -> list:
+    import re
+    try:
+        import pdfplumber
+    except ImportError:
+        return []
+    DATE_RE = re.compile(r"^(\d{1,2}\s+\w+\.?\s+\d{4}р?\.?)\s+(.+?)\s+([\d\s]+,\d{2})€")
+    AMT_RE = re.compile(r"([\d\s]+,\d{2})€")
+    SKIP_RE = re.compile(r"Revolut|IBAN|BIC|Seddiner|Berlin|Підсумок|Продукт|Рахунок|Всього|Баланс|Операції|Дата|Опис|Повідомити|Отримати|Сканувати|©|Банк Revolut|реєстрі|Ave\.|Депозити|документом|установу|відвідайте|з нами", re.IGNORECASE)
+    transactions = []
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            all_lines = []
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                all_lines.extend(text.split("\n"))
+        i = 0
+        while i < len(all_lines):
+            line = all_lines[i].strip()
+            if SKIP_RE.search(line):
+                i += 1
+                continue
+            m = DATE_RE.match(line)
+            if m:
+                date = parse_revolut_date_ua(m.group(1))
+                desc = m.group(2).strip()
+                amounts = [float(a.replace(" ", "").replace(",", ".")) for a in AMT_RE.findall(line)]
+                i += 1
+                # Collect extra description lines
+                while i < len(all_lines):
+                    next_line = all_lines[i].strip()
+                    if DATE_RE.match(next_line) or SKIP_RE.search(next_line):
+                        break
+                    if next_line.startswith("Реквізити:"):
+                        detail = next_line.replace("Реквізити:", "").strip()
+                        if detail:
+                            desc += " " + detail
+                    elif next_line.startswith("Від:") or next_line.startswith("From:"):
+                        pass
+                    elif next_line:
+                        desc += " " + next_line
+                    i += 1
+                if not date or not amounts:
+                    continue
+                # Логика: если две суммы — первая витрачені (расход), вторая баланс
+                # если одна сумма в колонке внесені — доход
+                # Определяем по позиции в строке
+                line_lower = line.lower()
+                # Ищем колонку "витрачені" — расход
+                # Если описание содержит имя владельца — это внутренний перевод, пропускаем
+                if "alina dotsenko" in desc.lower() or "alina" in desc.lower() and "dotsenko" in desc.lower():
+                    i += 0
+                    continue
+                # Первая сумма в строке — витрачені если есть вторая сумма
+                if len(amounts) >= 2:
+                    # витрачені кошти и баланс — это расход
+                    amt = amounts[0]
+                    tip = "Расход"
+                elif len(amounts) == 1:
+                    # только одна сумма — внесені (доход) или витрачені
+                    # проверяем позицию в строке
+                    amt = amounts[0]
+                    tip = "Доход" if "внесені" not in line else "Расход"
+                else:
+                    continue
+                transactions.append({
+                    "date": date,
+                    "description": desc.strip(),
+                    "amount": amt,
+                    "category": get_category(desc) if tip == "Расход" else "",
+                    "source": "Revolut PDF",
+                    "type": tip
+                })
+    except Exception:
+        pass
+    return transactions
+
+
 def parse_pdf_sparkasse(pdf_bytes: bytes) -> list:
     import re
     try:
@@ -574,11 +668,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_pdf and not is_csv:
         await update.message.reply_text("Пожалуйста, отправь CSV или PDF файл.")
         return
-    if "revolut" in fname:
+    if "revolut" in fname or "account-statement" in fname:
         source = "Revolut"
     elif "paypal" in fname or "csr" in fname:
         source = "PayPal"
-    elif "sparkasse" in fname or "umsatz" in fname or "export" in fname:
+    elif "sparkasse" in fname or "umsatz" in fname or "export" in fname or "konto" in fname or "auszug" in fname:
         source = "Sparkasse"
     else:
         # Сохраняем file_id по короткому ключу
@@ -619,7 +713,10 @@ async def process_file(update_or_query, context, file_id: str, source: str, is_p
         file = await context.bot.get_file(file_id)
         raw = bytes(await file.download_as_bytearray())
         if is_pdf:
-            transactions = parse_pdf_sparkasse(raw)
+            if source == "Revolut":
+                transactions = parse_pdf_revolut(raw)
+            else:
+                transactions = parse_pdf_sparkasse(raw)
         else:
             content = raw.decode("utf-8", errors="ignore")
             if source == "Revolut":
