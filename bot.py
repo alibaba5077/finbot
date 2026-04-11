@@ -133,23 +133,40 @@ def save_to_sheet(transactions: list) -> int:
     except gspread.WorksheetNotFound:
         ws = sheet.add_worksheet("Повседневные", rows=1000, cols=7)
         ws.append_row(["Дата", "Месяц", "Категория", "Тип", "Стоимость", "Комментарий", "Источник"])
-    existing = ws.col_values(6)
+    # Загружаем все данные для проверки дублей по дате+сумме
+    all_data = ws.get_all_records()
+    existing_markers = set()
+    for r in all_data:
+        date_val = str(r.get("Дата", "")).strip()
+        amt = str(r.get("Стоимость", "")).strip()
+        tip = str(r.get("Тип", "")).strip()
+        if date_val and amt:
+            # Маркер по дате+сумме+тип
+            existing_markers.add(f"{date_val}|{amt}|{tip}")
+            # Также по описанию для совместимости
+            existing_markers.add(f"{date_val}|{r.get('Комментарий', '')}")
+
     added = 0
     for t in transactions:
-        # Записываем дату как серийный номер Google Sheets чтобы формулы работали
-        d = t["date"]
-        # Google Sheets serial date: дни с 30.12.1899
         from datetime import date as date_type
+        d = t["date"]
         serial = (d.date() if hasattr(d, 'date') else d) - date_type(1899, 12, 30)
         gs_date = serial.days
         month = MONTH_NAMES[d.month]
         comment = t["description"]
         date_str = d.strftime("%d.%m.%Y")
-        marker = f"{date_str}|{comment}"
-        if marker in existing:
+        amt_str = str(round(t["amount"], 2))
+        tip = t.get("type", "Расход")
+
+        # Проверяем дубль по дате+сумме+тип
+        marker_amt = f"{date_str}|{amt_str}|{tip}"
+        marker_desc = f"{date_str}|{comment}"
+        if marker_amt in existing_markers or marker_desc in existing_markers:
             continue
-        ws.append_row([gs_date, month, t.get("category", ""), t.get("type", "Расход"), round(t["amount"], 2), comment, t.get("source", "")])
-        existing.append(marker)
+
+        ws.append_row([gs_date, month, t.get("category", ""), tip, round(t["amount"], 2), comment, t.get("source", "")])
+        existing_markers.add(marker_amt)
+        existing_markers.add(marker_desc)
         added += 1
     return added
 
@@ -256,9 +273,9 @@ def parse_pdf_sparkasse(pdf_bytes: bytes) -> list:
         import pdfplumber
     except ImportError:
         return []
-    DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}")
-    AMOUNT_RE = re.compile(r"^\s*(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$")
-    SKIP_RE = re.compile(r"(Kontostand|Seite \d|Berliner Sparkasse|Sparkassen|Vorstand|Telefon|www\.|BLZ:|SWIFT|Amtsgericht|USt|Sitz Berlin|Niederlassung|Vors\.|Nancy|Michael|Alexander|Postanschrift|Alexanderplatz 2, 10178)", re.IGNORECASE)
+    # Формат Sparkasse: "02.03.2026LastschriftDebitkarte -27,50" — дата+описание+сумма в одной строке
+    LINE_RE = re.compile(r"^(\d{2}\.\d{2}\.\d{4})(.+?)\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$")
+    SKIP_RE = re.compile(r"Kontostand|Seite|Berliner Sparkasse|Sparkassen|Vorstand|Telefon|www\.|BLZ:|SWIFT|Amtsgericht|Vors\.|Postanschrift|Niederlassung|Sitz Berlin|USt|Rechnungsnummer|Hinweise|Einwendungen|Gutschriften|Schecks|Sparurkunde|Dieser|Unsere|Mit freundlichen|Ihre Sparkasse", re.IGNORECASE)
     transactions = []
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -269,38 +286,35 @@ def parse_pdf_sparkasse(pdf_bytes: bytes) -> list:
         i = 0
         while i < len(all_lines):
             line = all_lines[i].strip()
-            if DATE_RE.match(line) and not SKIP_RE.search(line):
-                date_str = line[:10]
-                erlaeuterung = line[10:].strip()
-                desc_parts = []
+            if SKIP_RE.search(line):
+                i += 1
+                continue
+            m = LINE_RE.match(line)
+            if m:
+                date_str = m.group(1)
+                erlaeuterung = m.group(2).strip()
+                amount = float(m.group(3).replace(".", "").replace(",", "."))
+                desc_parts = [erlaeuterung]
                 i += 1
                 while i < len(all_lines):
-                    next_line = all_lines[i]
-                    amt_match = AMOUNT_RE.match(next_line)
-                    if amt_match:
-                        amt_str = amt_match.group(1).replace(".", "").replace(",", ".")
-                        amount = float(amt_str)
-                        desc = (erlaeuterung + " " + " ".join(desc_parts)).strip()
-                        date = parse_date(date_str)
-                        if date:
-                            tip = "Расход" if amount < 0 else "Доход"
-                            transactions.append({
-                                "date": date,
-                                "description": desc,
-                                "amount": abs(amount),
-                                "category": get_category(desc) if tip == "Расход" else "",
-                                "source": "Sparkasse PDF",
-                                "type": tip
-                            })
-                        i += 1
+                    next_line = all_lines[i].strip()
+                    if LINE_RE.match(next_line) or SKIP_RE.search(next_line):
                         break
-                    elif DATE_RE.match(next_line.strip()) and not SKIP_RE.search(next_line):
-                        break
-                    else:
-                        stripped = next_line.strip()
-                        if stripped and not SKIP_RE.search(stripped):
-                            desc_parts.append(stripped)
-                        i += 1
+                    if next_line:
+                        desc_parts.append(next_line)
+                    i += 1
+                desc = " ".join(desc_parts)
+                date = parse_date(date_str)
+                if date:
+                    tip = "Расход" if amount < 0 else "Доход"
+                    transactions.append({
+                        "date": date,
+                        "description": desc,
+                        "amount": abs(amount),
+                        "category": get_category(desc) if tip == "Расход" else "",
+                        "source": "Sparkasse PDF",
+                        "type": tip
+                    })
             else:
                 i += 1
     except Exception:
