@@ -21,17 +21,20 @@ pending_files = {}
 
 CATEGORIES = {
     "Продукты": ["rewe", "lidl", "aldi", "edeka", "penny", "netto", "kaufland", "billa", "spar", "metro", "продукты", "market"],
-    "Кафе": ["cafe", "coffee", "starbucks", "kaffee", "restaurant", "pizza", "burger", "mcdonalds", "kfc", "subway", "bar", "кафе", "ресторан", "lieferando"],
+    "Кафе": ["cafe", "coffee", "starbucks", "kaffee", "restaurant", "pizza", "burger", "mcdonalds", "kfc", "subway", "bar", "кафе", "ресторан", "lieferando", "vending", "automat tas"],
     "Транспорт": ["bvg", "db ", "deutsche bahn", "ubahn", "s-bahn", "uber", "bolt", "taxi", "mvg", "проездной", "транспорт", "tankstelle", "aral", "shell"],
     "Здоровье": ["apotheke", "pharmacy", "arzt", "doctor", "аптека", "psycholog", "линзы", "brillen", "rossmann", "petrishcheva", "петришева", "marina"],
-    "Фитнесс": ["fitness", "gym", "sport", "yoga", "fitnessstudio"],
-    "Одежда": ["zara", "h&m", "primark", "c&a", "uniqlo", "zalando", "одежда"],
-    "Связь плюс подписки": ["netflix", "spotify", "amazon prime", "apple", "google", "симка", "vodafone", "telekom", "o2", "congstar", "abo"],
+    "Фитнесс": ["fitness", "gym", "sport", "yoga", "fitnessstudio", "mcfit", "mc-fit", "rsg group"],
+    "Одежда": ["zara", "h&m", "primark", "c&a", "uniqlo", "zalando", "одежда", "vinted", "kleiderkreisel", "tkmaxx", "tk maxx"],
+    "Связь плюс подписки": ["netflix", "spotify", "amazon prime", "apple", "google", "симка", "vodafone", "telekom", "o2", "congstar", "abo", "entgeltabrechnung", "freenet"],
     "Немецкий": ["schule", "kurs", "deutsch", "немецкий", "volkshochschule", "vhs", "ahso", "netz.schule", "ксенія", "ксения"],
     "Подарки": ["подарок", "geschenk", "blumen", "цветы"],
-    "Для дома": ["ikea", "obi", "bauhaus", "hornbach", "saturn", "mediamarkt", "haushalt"],
+    "Для дома": ["ikea", "obi", "bauhaus", "hornbach", "saturn", "mediamarkt", "haushalt", "dm drogerie", "dm-drogerie"],
     "Уход": ["friseur", "kosmetik", "beauty", "nails", "массаж"],
 }
+
+# Транзакции которые нужно игнорировать
+IGNORE_KEYWORDS = ["verfügung geldautomat", "geldautomat", "auszahlung", "ga nr"]
 
 MONTH_NAMES = {
     1: "янв.", 2: "февр.", 3: "март", 4: "апр.",
@@ -306,15 +309,19 @@ def parse_pdf_sparkasse(pdf_bytes: bytes) -> list:
                 desc = " ".join(desc_parts)
                 date = parse_date(date_str)
                 if date:
-                    tip = "Расход" if amount < 0 else "Доход"
-                    transactions.append({
-                        "date": date,
-                        "description": desc,
-                        "amount": abs(amount),
-                        "category": get_category(desc) if tip == "Расход" else "",
-                        "source": "Sparkasse PDF",
-                        "type": tip
-                    })
+                    desc_lower = desc.lower()
+                    if any(kw in desc_lower for kw in IGNORE_KEYWORDS):
+                        i += 0  # пропускаем снятие наличных
+                    else:
+                        tip = "Расход" if amount < 0 else "Доход"
+                        transactions.append({
+                            "date": date,
+                            "description": desc,
+                            "amount": abs(amount),
+                            "category": get_category(desc) if tip == "Расход" else "",
+                            "source": "Sparkasse PDF",
+                            "type": tip
+                        })
             else:
                 i += 1
     except Exception:
