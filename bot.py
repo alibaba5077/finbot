@@ -23,7 +23,7 @@ CATEGORIES = {
     "Продукты": ["rewe", "lidl", "aldi", "edeka", "penny", "netto", "kaufland", "billa", "spar", "metro", "продукты", "market"],
     "Кафе": ["cafe", "coffee", "starbucks", "kaffee", "restaurant", "pizza", "burger", "mcdonalds", "kfc", "subway", "bar", "кафе", "ресторан", "lieferando", "vending", "automat tas"],
     "Транспорт": ["bvg", "db ", "deutsche bahn", "ubahn", "s-bahn", "uber", "bolt", "taxi", "mvg", "проездной", "транспорт", "tankstelle", "aral", "shell"],
-    "Здоровье": ["apotheke", "pharmacy", "arzt", "doctor", "аптека", "psycholog", "линзы", "brillen", "rossmann", "petrishcheva", "петришева", "marina"],
+    "Здоровье": ["apotheke", "pharmacy", "arzt", "doctor", "аптека", "psycholog", "линзы", "brillen", "rossmann", "petrishcheva", "петришева", "marinapetrischeva", "paypal *marina"],
     "Фитнесс": ["fitness", "gym", "sport", "yoga", "fitnessstudio", "mcfit", "mc-fit", "rsg group"],
     "Одежда": ["zara", "h&m", "primark", "c&a", "uniqlo", "zalando", "одежда", "vinted", "kleiderkreisel", "tkmaxx", "tk maxx"],
     "Связь плюс подписки": ["netflix", "spotify", "amazon prime", "apple", "google", "симка", "vodafone", "telekom", "o2", "congstar", "abo", "entgeltabrechnung", "freenet"],
