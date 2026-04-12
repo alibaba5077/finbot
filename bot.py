@@ -357,8 +357,8 @@ def parse_pdf_revolut(pdf_bytes: bytes) -> list:
                     "source": "Revolut PDF",
                     "type": tip
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        return [{"date": datetime.now(), "description": f"DEBUG ERROR: {str(e)}", "amount": 0.01, "category": "Прочее", "source": "DEBUG", "type": "Расход"}]
     return transactions
 
 
@@ -736,8 +736,9 @@ async def process_file(update_or_query, context, file_id: str, source: str, is_p
             lines.append(f"  • {cat}: {amt:.2f} €")
         await reply("\n".join(lines))
     except Exception as e:
-        await reply(f"❌ Ошибка: {str(e)}")
-
+        import traceback
+        err = str(e) + "\n" + traceback.format_exc()[-300:]
+        await reply(f"\u274c {err}")
 
 async def send_monthly_report(context, chat_id: int):
     now = datetime.now()
