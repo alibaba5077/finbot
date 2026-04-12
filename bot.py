@@ -330,27 +330,25 @@ def parse_pdf_revolut(pdf_bytes: bytes) -> list:
                     i += 1
                 if not date or not amounts:
                     continue
-                # Логика: если две суммы — первая витрачені (расход), вторая баланс
-                # если одна сумма в колонке внесені — доход
-                # Определяем по позиции в строке
-                line_lower = line.lower()
-                # Ищем колонку "витрачені" — расход
-                # Если описание содержит имя владельца — это внутренний перевод, пропускаем
-                if "alina dotsenko" in desc.lower() or "alina" in desc.lower() and "dotsenko" in desc.lower():
-                    i += 0
+                desc_l = desc.lower()
+                # Пропускаем внутренние переводы на своё имя
+                if "alina dotsenko" in desc_l:
                     continue
-                # Первая сумма в строке — витрачені если есть вторая сумма
-                if len(amounts) >= 2:
-                    # витрачені кошти и баланс — это расход
+                # Определяем тип по позиции суммы в строке
+                # Формат: "дата описание [витрачені€] [внесені€] [баланс€]"
+                # Ищем позиции сумм в исходной строке
+                raw_amounts = AMT_RE.findall(line)
+                # Если "Платіж від" или "від" — это входящий платёж (доход)
+                if "платіж від" in desc_l or desc_l.startswith("від "):
+                    amt = amounts[0]
+                    tip = "Доход"
+                elif len(raw_amounts) >= 2:
+                    # Первая сумма — витрачені (расход)
                     amt = amounts[0]
                     tip = "Расход"
-                elif len(amounts) == 1:
-                    # только одна сумма — внесені (доход) или витрачені
-                    # проверяем позицию в строке
-                    amt = amounts[0]
-                    tip = "Доход" if "внесені" not in line else "Расход"
                 else:
-                    continue
+                    amt = amounts[0]
+                    tip = "Расход"
                 transactions.append({
                     "date": date,
                     "description": desc.strip(),
